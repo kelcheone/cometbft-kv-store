@@ -2,12 +2,14 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
 
+	abciserver "github.com/cometbft/cometbft/abci/server"
 	cfg "github.com/cometbft/cometbft/config"
 	cmtflags "github.com/cometbft/cometbft/libs/cli/flags"
 	cmtlog "github.com/cometbft/cometbft/libs/log"
@@ -19,13 +21,17 @@ import (
 	"github.com/spf13/viper"
 )
 
-var homedir string
+var (
+	homedir    string
+	socketAddr string
+)
 
 func init() {
 	flag.StringVar(&homedir, "cmt-home", "", "Path to the CometBFT config directory (if empty, uses $HOME/.cometbft/")
+	flag.StringVar(&socketAddr, "socket-addr", "unix://example.sock", "Unix domain socket address (if empty uses \"unix://example.sock\")")
 }
 
-func main() {
+func sameProcess() {
 	flag.Parse()
 	if homedir == "" {
 		homedir = os.ExpandEnv("$HOME/.cometbft/")
@@ -103,4 +109,43 @@ func main() {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	<-c
+}
+
+func diffProcesses() {
+	flag.Parse()
+	if homedir == "" {
+		homedir = os.ExpandEnv("$HOME/.cometbft/")
+	}
+	dbPath := filepath.Join(homedir, "badger")
+	db, err := badger.Open(badger.DefaultOptions(dbPath))
+	if err != nil {
+		log.Fatalf("Opening database: %v", err)
+	}
+
+	defer func() {
+		if err := db.Close(); err != nil {
+			log.Fatalf("Closing databae: %v", err)
+		}
+	}()
+
+	app := NewKVStoreApplication(db)
+	logger := cmtlog.NewTMLogger(cmtlog.NewSyncWriter(os.Stdout))
+	server := abciserver.NewSocketServer(socketAddr, app)
+	server.SetLogger(logger)
+
+	if err := server.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "error starting socket server: %v", err)
+		os.Exit(1)
+	}
+
+	defer server.Stop()
+
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, syscall.SIGTERM)
+	<-c
+}
+
+func main() {
+	// sameProcess()
+	diffProcesses()
 }
